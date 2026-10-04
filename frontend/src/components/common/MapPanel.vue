@@ -21,6 +21,8 @@ const props = withDefaults(
     selectedId?: number | null
     /** 每个营位的等级，用于着色 */
     gradeOf?: (siteId: number) => Grade
+    /** 营位角标（如某日已确认帐篷数），待确认/排队批次不传入 */
+    badgeOf?: (siteId: number) => string | null
     /** pick 模式下点击空白处会抛出经纬度（用于选点登记） */
     mode?: 'view' | 'pick'
     /** 地图高度 */
@@ -31,6 +33,7 @@ const props = withDefaults(
   {
     selectedId: null,
     gradeOf: undefined,
+    badgeOf: undefined,
     mode: 'view',
     height: '420px',
     title: '营位分布'
@@ -59,7 +62,8 @@ const points = computed(() =>
   props.sites.map((site) => {
     const pt = projectToGrid({ lng: site.lng, lat: site.lat }, bounds.value, GRID_W, GRID_H)
     const grade: Grade = props.gradeOf ? props.gradeOf(site.id ?? -1) : 'C'
-    return { site, x: pt.x, y: pt.y, color: GRADE_COLOR[grade], grade }
+    const badge = props.badgeOf ? props.badgeOf(site.id ?? -1) : null
+    return { site, x: pt.x, y: pt.y, color: GRADE_COLOR[grade], grade, badge }
   })
 )
 
@@ -110,7 +114,9 @@ function renderAmapMarkers(): void {
     const marker = new ns.Marker({
       position: [item.site.lng, item.site.lat],
       title: `${item.site.code} ${item.site.name}`,
-      content: `<div class="gb-amap-pin" style="--pin:${item.color}"><span>${item.site.code.slice(-2)}</span><em>${item.grade}</em></div>`,
+      content: `<div class="gb-amap-pin" style="--pin:${item.color}"><span>${item.site.code.slice(-2)}</span><em>${item.grade}</em>${
+        item.badge ? `<b>${item.badge}</b>` : ''
+      }</div>`,
       offset: new ns.Pixel(-16, -16)
     })
     marker.on('click', () => emit('select', item.site.id as number))
@@ -159,12 +165,9 @@ watch(
   { immediate: true }
 )
 
-watch(
-  () => props.sites.map((s) => `${s.id}:${s.lng}:${s.lat}`).join('|'),
-  () => {
-    if (amap.value && !degraded.value) renderAmapMarkers()
-  }
-)
+watch(points, () => {
+  if (amap.value && !degraded.value) renderAmapMarkers()
+})
 
 onBeforeUnmount(() => {
   destroyMap()
@@ -260,6 +263,10 @@ onBeforeUnmount(() => {
           <text :x="pt.x + 14" :y="pt.y - 10" class="map-panel__nodeLabel">
             {{ pt.site.code }}
           </text>
+          <g v-if="pt.badge" class="map-panel__badge">
+            <rect :x="pt.x - 19" :y="pt.y - 30" width="38" height="16" rx="8" />
+            <text :x="pt.x" :y="pt.y - 18.5" text-anchor="middle">{{ pt.badge }}</text>
+          </g>
         </g>
       </svg>
 
@@ -371,6 +378,17 @@ onBeforeUnmount(() => {
 .map-panel__nodeLabel {
   font-size: 11px;
   fill: #3d5442;
+  pointer-events: none;
+}
+.map-panel__badge rect {
+  fill: #14532d;
+  stroke: #ffffff;
+  stroke-width: 1.5;
+}
+.map-panel__badge text {
+  font-size: 10px;
+  font-weight: 700;
+  fill: #ffffff;
   pointer-events: none;
 }
 .map-panel__node.is-active circle:nth-child(2) {
@@ -493,6 +511,19 @@ onBeforeUnmount(() => {
 .gb-amap-pin em {
   transform: rotate(45deg);
   font-style: normal;
+}
+.gb-amap-pin b {
+  position: absolute;
+  left: 50%;
+  bottom: -18px;
+  transform: translateX(-50%) rotate(45deg);
+  background: #14532d;
+  color: #fff;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 15px;
+  padding: 0 6px;
+  white-space: nowrap;
 }
 .gb-amap-pin em {
   position: absolute;

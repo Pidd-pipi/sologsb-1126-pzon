@@ -41,14 +41,16 @@ docker compose down
 | FactorAssessment 因子评估 | `frontend/src/types/factor.ts` | 所属营位、水源距离、风向与风力等级、信号强度、日照时长、落石落枝风险、植被遮蔽度、离车距离、离步道距离、评估人、评估日期 |
 | ScoreProfile 权重方案 | `frontend/src/types/score.ts` | 方案名、各因子权重（0-100）、归一化方式（极差归一 / 阈值分段）、A/B/C 等级阈值、适用季节、是否启用 |
 | RiskVeto 风险否决项 | `frontend/src/types/veto.ts` | 营位 id、否决类型（河道内 / 山洪沟 / 孤树下 / 崖底落石区 / 陡坡）、说明、判定人、判定日期 |
+| CampVersion / OccupancyBatch 容量版本与入住批次 | `frontend/src/types/occupancy.ts` | 按营地维护容量/因子/否决版本；按「营地 + 入住日 + 批次号」幂等登记，扣除两成应急余量后确认或排队 |
 
 ### IndexedDB 版本与升级迁移
 
-库名 `gbcampsite-db`（Dexie），共 4 张表：`sites`、`factors`、`profiles`、`vetos`。
+库名 `gbcampsite-db`（Dexie），共 6 张表：`sites`、`factors`、`profiles`、`vetos`、`campVersions`、`occupancyBatches`。
 
 - **v1**：建立 `sites`（营位）与 `factors`（因子评估）两张表。
 - **v2**：新增 `profiles`（权重方案）表，并为 `factors` 补 `siteId` 索引，让「按营位取因子」走索引；同时为存量因子补齐 `shade`、`distanceToCar`、`distanceToTrail` 缺省值。
 - **v3**：新增 `vetos`（风险否决）表，并为存量营位回填 `defaultProfileId`（取当前启用方案的 id）与新增字段缺省值。
+- **v4**：新增 `campVersions` 与 `occupancyBatches`，容量账本按营地和入住日计算两成应急余量、排队与预占释放；登记携带容量/因子/否决版本，旧版本保存时要求重新确认。
 
 ## 四、页面与路由
 
@@ -58,8 +60,9 @@ docker compose down
 | `/sites/new` | 新增营位（地图点选或手填经纬度，录入海拔、坡度、坡向与容量，支持草稿保存） | Campsite、FactorAssessment |
 | `/sites/:id` | 营位详情（上部地图定位与基本信息，中部因子打分表，下部否决记录与多轮复核） | 四个模型 |
 | `/scoring` | 权重与评分（拖动各因子权重条，名次实时刷新，可另存为季节方案） | ScoreProfile、Campsite |
-| `/map` | 营位地图（高德 JS API 标记按等级着色，未配置 `VITE_AMAP_KEY` 时退化为本地 SVG 网格视图） | Campsite、RiskVeto |
-| `/veto` | 风险否决登记（选营位与否决类型、填说明，提交后名次表与地图同步更新） | RiskVeto、Campsite |
+| `/map` | 营位地图（高德 JS API 标记按等级着色，未配置 `VITE_AMAP_KEY` 时退化为本地 SVG 网格视图；仅已确认入住批次显示占用角标） | Campsite、RiskVeto、OccupancyBatch |
+| `/occupancy` | 容量账本（按营地/入住日扣两成应急余量，容量不足排队；支持 90 秒临时预占、重复提交幂等、旧版本重新确认与手动释放） | Campsite、RiskVeto、CampVersion、OccupancyBatch |
+| `/veto` | 风险否决登记（选营位与否决类型、填说明，提交后名次表与地图同步更新，并使相关入住批次立即待确认） | RiskVeto、Campsite、OccupancyBatch |
 
 ## 五、共享组件与 hooks / utils
 
@@ -89,13 +92,13 @@ sologsb-1126/
     ├── vite.config.ts
     ├── public/favicon.svg
     └── src/
-        ├── types/{campsite,factor,score,veto}.ts
-        ├── stores/{siteStore,profileStore,uiStore}.ts
+        ├── types/{campsite,factor,score,veto,occupancy}.ts
+        ├── stores/{siteStore,profileStore,uiStore,occupancyStore}.ts
         ├── components/common/{MapPanel,FactorScoreBar,GradeBadge,EmptyState,WeightEditor}.vue
         ├── hooks/{useAmapLoader,useRanking,useLocalDraft}.ts
-        ├── pages/{Ranking,SiteNew,SiteDetail,Scoring,MapView,Veto}.vue
+        ├── pages/{Ranking,SiteNew,SiteDetail,Scoring,MapView,Occupancy,Veto}.vue
         ├── router/index.ts
-        ├── utils/{score,geo,format,db,draft}.ts
+        ├── utils/{score,geo,format,db,draft,occupancy}.ts
         ├── styles/main.css
         ├── App.vue
         └── main.ts
@@ -103,6 +106,7 @@ sologsb-1126/
 
 ## 八、数据存储说明
 
-- 全部数据只存在浏览器本地：营位、因子评估、权重方案、否决记录存 **IndexedDB**（Dexie，库名 `gbcampsite-db`）。
+- 全部数据只存在浏览器本地：营位、因子评估、权重方案、否决记录、营地容量版本与入住批次存 **IndexedDB**（Dexie，库名 `gbcampsite-db`）。
+- 容量账本按「营地 + 入住日」扣除两成应急余量；同批次幂等，容量不足排队，待确认批次不占名额。临时预占由窗口心跳维持 90 秒，页面关闭或超时自动释放。
 - 表单草稿（新增营位、否决登记）存 **localStorage**，键前缀 `gbcampsite:draft:`，刷新或误关页面后可恢复。
 - 容器完全无状态：不使用数据库服务、不挂载命名卷，清除浏览器站点数据即回到首次运行的样例营地。

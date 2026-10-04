@@ -10,8 +10,12 @@ import type { FactorWeights, NormalizeMethod, GradeThresholds } from '@/types/sc
 import { DEFAULT_WEIGHTS } from '@/types/score'
 import type { AccessMode, SurfaceType } from '@/types/campsite'
 import { nowIso, todayIso } from '@/utils/format'
+import { broadcastOccupancyChanged, bumpCampVersions } from '@/utils/occupancy'
 
 export const useUiStore = defineStore('ui', () => {
+  /** 名次表/地图查看容量占用的入住日 */
+  const occupancyDate = ref<string>(todayIso())
+
   const vetos = ref<RiskVeto[]>([])
   const loadingVetos = ref(false)
 
@@ -50,12 +54,23 @@ export const useUiStore = defineStore('ui', () => {
     }) as RiskVeto
     delete record.id
     const id = await db.vetos.add(record)
+    const site = await db.sites.get(record.siteId)
+    if (site) {
+      await bumpCampVersions([site.campName], 'veto')
+      broadcastOccupancyChanged()
+    }
     await loadVetos()
     return id
   }
 
   async function removeVeto(id: number): Promise<void> {
+    const veto = await db.vetos.get(id)
     await db.vetos.delete(id)
+    const site = veto ? await db.sites.get(veto.siteId) : null
+    if (site) {
+      await bumpCampVersions([site.campName], 'veto')
+      broadcastOccupancyChanged()
+    }
     await loadVetos()
   }
 
@@ -99,6 +114,7 @@ export const useUiStore = defineStore('ui', () => {
 
   return {
     vetos,
+    occupancyDate,
     loadingVetos,
     vetoTotal,
     filterCamp,

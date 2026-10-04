@@ -5,6 +5,11 @@ import { db, toPlain } from '@/utils/db'
 import type { Campsite } from '@/types/campsite'
 import type { FactorAssessment } from '@/types/factor'
 import { nextSerialNo, nowIso, todayIso } from '@/utils/format'
+import {
+  broadcastOccupancyChanged,
+  bumpCampVersions,
+  renameCampOccupancy
+} from '@/utils/occupancy'
 
 export const useSiteStore = defineStore('site', () => {
   const list = ref<Campsite[]>([])
@@ -33,16 +38,48 @@ export const useSiteStore = defineStore('site', () => {
     const record = toPlain({ ...input, createdAt: now, updatedAt: now }) as Campsite
     delete record.id
     const id = await db.sites.add(record)
+    await bumpCampVersions([record.campName], 'capacity')
+    broadcastOccupancyChanged()
     await load()
     return id
   }
 
   async function updateSite(id: number, patch: Partial<Campsite>): Promise<void> {
+    const before = await db.sites.get(id)
     await db.sites.update(id, toPlain({ ...patch, updatedAt: nowIso() }))
+    if (before) {
+      if (typeof patch.tentCapacity === 'number' && patch.tentCapacity !== before.tentCapacity) {
+        await bumpCampVersions([before.campName], 'capacity')
+      }
+      const factorFields: Array<keyof Campsite> = [
+        'name',
+        'lng',
+        'lat',
+        'elevation',
+        'slope',
+        'aspect',
+        'surface',
+        'flatness',
+        'access'
+      ]
+      const factorChanged = factorFields.some(
+        (field) => patch[field] !== undefined && patch[field] !== before[field]
+      )
+      if (factorChanged) await bumpCampVersions([before.campName], 'factor')
+
+      const nextCampName = patch.campName?.trim()
+      if (nextCampName && nextCampName !== before.campName) {
+        await renameCampOccupancy(before.campName, nextCampName)
+        await bumpCampVersions([before.campName, nextCampName], 'capacity')
+        if (factorChanged) await bumpCampVersions([before.campName, nextCampName], 'factor')
+      }
+      broadcastOccupancyChanged()
+    }
     await load()
   }
 
   async function removeSite(id: number): Promise<void> {
+    const site = await db.sites.get(id)
     await db.sites.delete(id)
     const own = factors.value.filter((f) => f.siteId === id)
     await db.factors.bulkDelete(
@@ -52,6 +89,12 @@ export const useSiteStore = defineStore('site', () => {
       .map((v) => v.id)
       .filter((v): v is number => typeof v === 'number')
     await db.vetos.bulkDelete(vetoIds)
+    if (site) {
+      await bumpCampVersions([site.campName], 'capacity')
+      await bumpCampVersions([site.campName], 'factor')
+      await bumpCampVersions([site.campName], 'veto')
+      broadcastOccupancyChanged()
+    }
     await load()
   }
 
@@ -65,12 +108,23 @@ export const useSiteStore = defineStore('site', () => {
     }) as FactorAssessment
     delete record.id
     const id = await db.factors.add(record)
+    const site = await db.sites.get(record.siteId)
+    if (site) {
+      await bumpCampVersions([site.campName], 'factor')
+      broadcastOccupancyChanged()
+    }
     await load()
     return id
   }
 
   async function removeFactor(id: number): Promise<void> {
+    const factor = await db.factors.get(id)
     await db.factors.delete(id)
+    const site = factor ? await db.sites.get(factor.siteId) : null
+    if (site) {
+      await bumpCampVersions([site.campName], 'factor')
+      broadcastOccupancyChanged()
+    }
     await load()
   }
 

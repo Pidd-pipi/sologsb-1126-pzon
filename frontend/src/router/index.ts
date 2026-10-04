@@ -33,6 +33,12 @@ export const routes: RouteRecordRaw[] = [
     meta: { title: '营位地图' }
   },
   {
+    path: '/occupancy',
+    name: 'occupancy',
+    component: () => import('@/pages/Occupancy.vue'),
+    meta: { title: '容量账本' }
+  },
+  {
     path: '/veto',
     name: 'veto',
     component: () => import('@/pages/Veto.vue'),

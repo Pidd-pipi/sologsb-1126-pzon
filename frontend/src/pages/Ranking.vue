@@ -9,6 +9,7 @@ import { useRouter } from 'vue-router'
 import { useSiteStore } from '@/stores/siteStore'
 import { useProfileStore } from '@/stores/profileStore'
 import { useUiStore } from '@/stores/uiStore'
+import { useOccupancyStore } from '@/stores/occupancyStore'
 import { useRanking } from '@/hooks/useRanking'
 import { FACTOR_META } from '@/types/score'
 import { SURFACE_TYPES, ACCESS_MODES } from '@/types/campsite'
@@ -21,6 +22,7 @@ const router = useRouter()
 const siteStore = useSiteStore()
 const profileStore = useProfileStore()
 const uiStore = useUiStore()
+const occupancyStore = useOccupancyStore()
 
 const inputSites = computed(() =>
   siteStore.list.filter((site) => {
@@ -76,6 +78,20 @@ const activeNormalize = computed(() =>
   profileStore.activeProfile ? NORMALIZE_LABELS[profileStore.activeProfile.normalize] : '—'
 )
 
+function occupancyOf(site: { campName: string }): {
+  confirmed: number
+  remaining: number | null
+  pendingBatches: number
+} {
+  const summary = occupancyStore.summaryOf(site.campName, uiStore.occupancyDate)
+  if (!summary) return { confirmed: 0, remaining: null, pendingBatches: 0 }
+  return {
+    confirmed: summary.confirmedTents,
+    remaining: summary.remaining,
+    pendingBatches: summary.pendingBatches
+  }
+}
+
 function openDetail(siteId: number | undefined): void {
   if (typeof siteId !== 'number') return
   void router.push(`/sites/${siteId}`)
@@ -95,6 +111,7 @@ function openDetail(siteId: number | undefined): void {
       <div class="page-actions">
         <el-button @click="router.push('/scoring')">调权重</el-button>
         <el-button @click="router.push('/map')">看地图</el-button>
+        <el-button @click="router.push('/occupancy')">容量账本</el-button>
         <el-button type="primary" @click="router.push('/sites/new')">新增营位</el-button>
       </div>
     </div>
@@ -157,6 +174,13 @@ function openDetail(siteId: number | undefined): void {
           clearable
           style="width: 230px"
         />
+        <el-date-picker
+          v-model="uiStore.occupancyDate"
+          type="date"
+          value-format="YYYY-MM-DD"
+          placeholder="入住日期"
+          style="width: 160px"
+        />
         <el-button text @click="uiStore.resetFilters()">清空筛选</el-button>
       </div>
     </section>
@@ -197,6 +221,20 @@ function openDetail(siteId: number | undefined): void {
           <template #default="{ row }">
             <el-tag size="small" effect="plain">{{ row.site.surface }}</el-tag>
             <el-tag size="small" effect="plain" type="info" class="ml6">{{ row.site.access }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="入住占用" width="132" align="right">
+          <template #default="{ row }">
+            <template v-if="occupancyOf(row.site).remaining !== null">
+              <strong>{{ occupancyOf(row.site).confirmed }}</strong> 顶已确认
+              <div class="cell-sub">
+                剩余 {{ occupancyOf(row.site).remaining }}
+                <template v-if="occupancyOf(row.site).pendingBatches">
+                  · {{ occupancyOf(row.site).pendingBatches }} 批待确认
+                </template>
+              </div>
+            </template>
+            <span v-else class="muted">暂无登记</span>
           </template>
         </el-table-column>
         <el-table-column label="坡度" width="92" align="right">

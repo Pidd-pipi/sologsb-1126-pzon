@@ -12,6 +12,7 @@ import EmptyState from '@/components/common/EmptyState.vue'
 import { useSiteStore } from '@/stores/siteStore'
 import { useProfileStore } from '@/stores/profileStore'
 import { useUiStore } from '@/stores/uiStore'
+import { useOccupancyStore } from '@/stores/occupancyStore'
 import { useRanking } from '@/hooks/useRanking'
 import type { Grade } from '@/utils/score'
 import { useAmapLoader } from '@/hooks/useAmapLoader'
@@ -23,6 +24,7 @@ const router = useRouter()
 const siteStore = useSiteStore()
 const profileStore = useProfileStore()
 const uiStore = useUiStore()
+const occupancyStore = useOccupancyStore()
 
 /** 与 MapPanel 内保持一致的降级判定，用于页面顶部的模式说明 */
 const { hasKey, degraded: loaderDegraded, reason } = useAmapLoader(false)
@@ -66,6 +68,11 @@ const selectedRow = computed(() =>
 )
 
 const selectedVetos = computed(() => uiStore.vetosOf(selectedId.value))
+const selectedOccupancy = computed(() =>
+  selectedSite.value
+    ? occupancyStore.summaryOf(selectedSite.value.campName, uiStore.occupancyDate)
+    : null
+)
 
 /** 选中营位到最近营位的距离，作为现场通行参考 */
 const nearest = computed(() => {
@@ -89,6 +96,14 @@ function onPanelMode(payload: { degraded: boolean; reason: string }): void {
 
 function gradeOfSite(id: number): Grade {
   return scoreOf(id)?.grade ?? 'C'
+}
+
+function badgeOfSite(id: number): string | null {
+  const site = siteStore.byId(id)
+  if (!site) return null
+  const summary = occupancyStore.summaryOf(site.campName, uiStore.occupancyDate)
+  if (!summary || summary.confirmedTents <= 0) return null
+  return `${summary.confirmedTents}帐`
 }
 
 function selectSite(id: number): void {
@@ -118,6 +133,7 @@ const gradeStats = computed(() => {
       </div>
       <div class="page-actions">
         <el-button @click="router.push('/')">返回名次表</el-button>
+        <el-button @click="router.push('/occupancy')">容量账本</el-button>
         <el-button type="primary" @click="router.push('/sites/new')">新增营位</el-button>
       </div>
     </div>
@@ -165,6 +181,13 @@ const gradeStats = computed(() => {
         <el-select v-model="filterSurface" placeholder="全部地表类型" clearable style="width: 170px">
           <el-option v-for="s in SURFACE_TYPES" :key="s" :label="s" :value="s" />
         </el-select>
+        <el-date-picker
+          v-model="uiStore.occupancyDate"
+          type="date"
+          value-format="YYYY-MM-DD"
+          placeholder="入住日期"
+          style="width: 160px"
+        />
         <el-radio-group v-model="gradeFilter">
           <el-radio-button value="">全部等级</el-radio-button>
           <el-radio-button value="A">A 级</el-radio-button>
@@ -190,6 +213,7 @@ const gradeStats = computed(() => {
       :sites="panelSites"
       :selected-id="selectedId"
       :grade-of="gradeOfSite"
+      :badge-of="badgeOfSite"
       height="460px"
       title="营位分布与等级着色"
       @select="selectSite"
@@ -235,6 +259,19 @@ const gradeStats = computed(() => {
         <div class="detail-item">
           <span class="detail-item__label">容量 / 进出</span>
           <span>{{ selectedSite.tentCapacity }} 帐 / {{ selectedSite.access }}</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-item__label">入住日占用</span>
+          <span>
+            <template v-if="selectedOccupancy">
+              已确认 {{ selectedOccupancy.confirmedTents }} · 剩余
+              {{ selectedOccupancy.remaining }}
+              <template v-if="selectedOccupancy.pendingBatches">
+                · 待确认 {{ selectedOccupancy.pendingBatches }} 批
+              </template>
+            </template>
+            <template v-else>暂无确认批次</template>
+          </span>
         </div>
         <div class="detail-item">
           <span class="detail-item__label">平整度</span>
