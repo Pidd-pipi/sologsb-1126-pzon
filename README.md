@@ -41,14 +41,29 @@ docker compose down
 | FactorAssessment 因子评估 | `frontend/src/types/factor.ts` | 所属营位、水源距离、风向与风力等级、信号强度、日照时长、落石落枝风险、植被遮蔽度、离车距离、离步道距离、评估人、评估日期 |
 | ScoreProfile 权重方案 | `frontend/src/types/score.ts` | 方案名、各因子权重（0-100）、归一化方式（极差归一 / 阈值分段）、A/B/C 等级阈值、适用季节、是否启用 |
 | RiskVeto 风险否决项 | `frontend/src/types/veto.ts` | 营位 id、否决类型（河道内 / 山洪沟 / 孤树下 / 崖底落石区 / 陡坡）、说明、判定人、判定日期 |
+| OccupancyBatch 入住批次 | `frontend/src/types/ledger.ts` | 批次号（幂等键）、营地、意向营位、入住日、帐篷数、状态（预占 / 已确认 / 排队 / 待重算 / 旧入住 / 已释放）、携带的营地版本、窗口标识、预占到期时间 |
+| CampMeta 营地容量版本 | `frontend/src/types/ledger.ts` | 营地名称（主键）、容量版本号、最近变更时间 |
+
+### 容量台账（并发占用规则）
+
+营地容量做成「带日期的占用账本」，解决值班室两个窗口同时放最后一间帐篷位的并发问题：
+
+- **两成应急余量**：按营地 + 入住日，`可分配容量 = 可用容量 × 80%`（可用容量 = 物理容量 − 被否决营位容量），余量只多不少；
+- **排队**：剩余不足的批次按提交时间 FIFO 排队，腾出名额自动递进，队首放不下不跳过；
+- **幂等**：批次号重复提交只生效一次；
+- **营地版本乐观锁**：登记携带营地版本，旧窗口保存时若容量 / 因子 / 否决已变化导致版本递增，拒绝写入、保留表单并提示重新确认，不覆盖新容量；
+- **失效重算**：容量、营位因子或风险否决变化后，相关批次立即置为「待重算」，确认前不占容量、不进入营位名次与地图；
+- **预占到期 / 失联释放**：临时预占（hold）带 TTL 与心跳，窗口关闭（pagehide）或到期自动释放；
+- **旧入住待确认**：没有容量批次的历史入住列为「旧入住·待确认」，不挤占剩余名额，补登后才占用容量。
 
 ### IndexedDB 版本与升级迁移
 
-库名 `gbcampsite-db`（Dexie），共 4 张表：`sites`、`factors`、`profiles`、`vetos`。
+库名 `gbcampsite-db`（Dexie），共 6 张表：`sites`、`factors`、`profiles`、`vetos`、`batches`、`campMeta`。
 
 - **v1**：建立 `sites`（营位）与 `factors`（因子评估）两张表。
 - **v2**：新增 `profiles`（权重方案）表，并为 `factors` 补 `siteId` 索引，让「按营位取因子」走索引；同时为存量因子补齐 `shade`、`distanceToCar`、`distanceToTrail` 缺省值。
 - **v3**：新增 `vetos`（风险否决）表，并为存量营位回填 `defaultProfileId`（取当前启用方案的 id）与新增字段缺省值。
+- **v4**：新增 `batches`（入住批次，`batchNo` 唯一索引）与 `campMeta`（营地容量版本）两张表；为存量营地补容量版本元数据，并把开台账前的纸质 / 口头入住补为「旧入住·待确认」批次（不占容量）。
 
 ## 四、页面与路由
 
@@ -60,6 +75,7 @@ docker compose down
 | `/scoring` | 权重与评分（拖动各因子权重条，名次实时刷新，可另存为季节方案） | ScoreProfile、Campsite |
 | `/map` | 营位地图（高德 JS API 标记按等级着色，未配置 `VITE_AMAP_KEY` 时退化为本地 SVG 网格视图） | Campsite、RiskVeto |
 | `/veto` | 风险否决登记（选营位与否决类型、填说明，提交后名次表与地图同步更新） | RiskVeto、Campsite |
+| `/ledger` | 容量台账（按营地 + 入住日测算容量、两成应急余量、批次预占 / 确认 / 排队 / 待重算 / 旧入住补登，预占到期与失联自动释放） | OccupancyBatch、CampMeta、Campsite、RiskVeto |
 
 ## 五、共享组件与 hooks / utils
 
@@ -89,13 +105,13 @@ sologsb-1126/
     ├── vite.config.ts
     ├── public/favicon.svg
     └── src/
-        ├── types/{campsite,factor,score,veto}.ts
-        ├── stores/{siteStore,profileStore,uiStore}.ts
+        ├── types/{campsite,factor,score,veto,ledger}.ts
+        ├── stores/{siteStore,profileStore,uiStore,ledgerStore}.ts
         ├── components/common/{MapPanel,FactorScoreBar,GradeBadge,EmptyState,WeightEditor}.vue
         ├── hooks/{useAmapLoader,useRanking,useLocalDraft}.ts
-        ├── pages/{Ranking,SiteNew,SiteDetail,Scoring,MapView,Veto}.vue
+        ├── pages/{Ranking,SiteNew,SiteDetail,Scoring,MapView,Veto,Ledger}.vue
         ├── router/index.ts
-        ├── utils/{score,geo,format,db,draft}.ts
+        ├── utils/{score,geo,format,db,draft,ledger}.ts
         ├── styles/main.css
         ├── App.vue
         └── main.ts

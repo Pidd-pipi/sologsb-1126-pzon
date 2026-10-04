@@ -4,6 +4,7 @@ import { defineStore } from 'pinia'
 import { db, toPlain } from '@/utils/db'
 import type { Campsite } from '@/types/campsite'
 import type { FactorAssessment } from '@/types/factor'
+import { useLedgerStore } from '@/stores/ledgerStore'
 import { nextSerialNo, nowIso, todayIso } from '@/utils/format'
 
 export const useSiteStore = defineStore('site', () => {
@@ -28,6 +29,23 @@ export const useSiteStore = defineStore('site', () => {
     return nextSerialNo('CS-', list.value.map((s) => s.code))
   }
 
+  /** 容量 / 因子 / 否决变化后，让该营地的入住批次立即失效重算（失败不阻断主流程）。 */
+  async function invalidateCamp(campName: string, reason: string): Promise<void> {
+    if (!campName) return
+    try {
+      const ledger = useLedgerStore()
+      await ledger.bumpCampVersion(campName, reason)
+    } catch (err) {
+      console.warn('[gbcampsite] 容量台账失效失败：', err)
+    }
+  }
+
+  async function invalidateSiteCamp(siteId: number | null | undefined, reason: string): Promise<void> {
+    if (siteId == null) return
+    const site = list.value.find((s) => s.id === siteId)
+    if (site) await invalidateCamp(site.campName, reason)
+  }
+
   async function createSite(input: Campsite): Promise<number> {
     const now = nowIso()
     const record = toPlain({ ...input, createdAt: now, updatedAt: now }) as Campsite
@@ -38,11 +56,21 @@ export const useSiteStore = defineStore('site', () => {
   }
 
   async function updateSite(id: number, patch: Partial<Campsite>): Promise<void> {
+    const before = list.value.find((s) => s.id === id)
     await db.sites.update(id, toPlain({ ...patch, updatedAt: nowIso() }))
     await load()
+    // 容量调整或营地归属变化 → 相关批次立即失效重算
+    if (patch.tentCapacity !== undefined && before && Number(patch.tentCapacity) !== Number(before.tentCapacity)) {
+      await invalidateCamp(before.campName, '营位容量调整')
+    }
+    if (patch.campName !== undefined && before && patch.campName !== before.campName) {
+      await invalidateCamp(before.campName, '营地归属调整')
+      await invalidateCamp(String(patch.campName), '营地归属调整')
+    }
   }
 
   async function removeSite(id: number): Promise<void> {
+    const site = list.value.find((s) => s.id === id)
     await db.sites.delete(id)
     const own = factors.value.filter((f) => f.siteId === id)
     await db.factors.bulkDelete(
@@ -53,6 +81,8 @@ export const useSiteStore = defineStore('site', () => {
       .filter((v): v is number => typeof v === 'number')
     await db.vetos.bulkDelete(vetoIds)
     await load()
+    // 营位删除 → 营地容量下降，相关批次失效重算
+    if (site) await invalidateCamp(site.campName, '营位删除')
   }
 
   async function addFactor(input: FactorAssessment): Promise<number> {
@@ -66,12 +96,16 @@ export const useSiteStore = defineStore('site', () => {
     delete record.id
     const id = await db.factors.add(record)
     await load()
+    // 营位因子评估变化 → 相关批次立即失效重算
+    await invalidateSiteCamp(input.siteId, '营位因子评估变化')
     return id
   }
 
   async function removeFactor(id: number): Promise<void> {
+    const factor = factors.value.find((f) => f.id === id)
     await db.factors.delete(id)
     await load()
+    if (factor) await invalidateSiteCamp(factor.siteId, '营位因子评估变化')
   }
 
   function byId(id: number | null | undefined): Campsite | null {

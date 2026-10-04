@@ -39,6 +39,12 @@ export const routes: RouteRecordRaw[] = [
     meta: { title: '风险否决登记' }
   },
   {
+    path: '/ledger',
+    name: 'ledger',
+    component: () => import('@/pages/Ledger.vue'),
+    meta: { title: '容量台账' }
+  },
+  {
     path: '/:pathMatch(.*)*',
     redirect: '/'
   }

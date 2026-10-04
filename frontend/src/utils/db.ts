@@ -12,16 +12,20 @@ import type { FactorAssessment } from '@/types/factor'
 import type { ScoreProfile } from '@/types/score'
 import { DEFAULT_WEIGHTS } from '@/types/score'
 import type { RiskVeto } from '@/types/veto'
+import type { CampMeta, OccupancyBatch } from '@/types/ledger'
+import { todayIso } from '@/utils/format'
 
 export const DB_NAME = 'gbcampsite-db'
 /** 当前数据结构版本号 */
-export const DB_VERSION = 3
+export const DB_VERSION = 4
 
 export class GbCampsiteDatabase extends Dexie {
   sites!: Table<Campsite, number>
   factors!: Table<FactorAssessment, number>
   profiles!: Table<ScoreProfile, number>
   vetos!: Table<RiskVeto, number>
+  batches!: Table<OccupancyBatch, number>
+  campMeta!: Table<CampMeta, string>
 
   constructor() {
     super(DB_NAME)
@@ -53,7 +57,7 @@ export class GbCampsiteDatabase extends Dexie {
       })
 
     // v3：新增风险否决表；为存量营位回填默认方案 id 与新增字段缺省值
-    this.version(DB_VERSION)
+    this.version(3)
       .stores({
         sites: '++id, code, name, campName, surface, access, defaultProfileId, updatedAt',
         factors: '++id, siteId, assessedAt, assessor',
@@ -73,6 +77,28 @@ export class GbCampsiteDatabase extends Dexie {
             if (typeof s.flatness !== 'number') s.flatness = 70
             if (typeof s.tentCapacity !== 'number') s.tentCapacity = 1
           })
+      })
+
+    // v4：新增容量台账（入住批次）与营地容量版本表
+    this.version(DB_VERSION)
+      .stores({
+        sites: '++id, code, name, campName, surface, access, defaultProfileId, updatedAt',
+        factors: '++id, siteId, assessedAt, assessor',
+        profiles: '++id, name, season, active, updatedAt',
+        vetos: '++id, siteId, type, judgedAt',
+        batches: '++id, &batchNo, campName, checkInDate, status, windowId, legacy',
+        campMeta: '&campName, version'
+      })
+      .upgrade(async (tx) => {
+        // 为存量营地补容量版本元数据（v1）
+        const sites = (await tx.table('sites').toArray()) as Campsite[]
+        const campNames = Array.from(new Set(sites.map((s) => s.campName).filter(Boolean)))
+        const now = new Date().toISOString()
+        await tx.table('campMeta').bulkPut(
+          campNames.map((campName) => ({ campName, version: 1, capacityUpdatedAt: now }))
+        )
+        // 存量旧入住（没有容量批次）列为待确认，不挤占剩余名额
+        await tx.table('batches').bulkPut(seedLegacyBatches(campNames))
       })
   }
 }
@@ -373,10 +399,103 @@ function seedVetos(): RiskVeto[] {
 export async function seedIfEmpty(): Promise<void> {
   const count = await db.sites.count()
   if (count > 0) return
-  await db.transaction('rw', db.sites, db.factors, db.profiles, db.vetos, async () => {
-    await db.profiles.bulkPut(seedProfiles())
-    await db.sites.bulkPut(seedSites())
-    await db.factors.bulkPut(seedFactors())
-    await db.vetos.bulkPut(seedVetos())
-  })
+  const campNames = Array.from(new Set(seedSites().map((s) => s.campName)))
+  await db.transaction(
+    'rw',
+    [db.sites, db.factors, db.profiles, db.vetos, db.batches, db.campMeta],
+    async () => {
+      await db.profiles.bulkPut(seedProfiles())
+      await db.sites.bulkPut(seedSites())
+      await db.factors.bulkPut(seedFactors())
+      await db.vetos.bulkPut(seedVetos())
+      await db.campMeta.bulkPut(seedCampMeta(campNames))
+      await db.batches.bulkPut(seedBatches(campNames))
+    }
+  )
+}
+
+/* --------------------------- 容量台账样例数据 --------------------------- */
+
+/** 营地容量版本元数据：首次运行全部为 v1。 */
+function seedCampMeta(campNames: string[]): CampMeta[] {
+  const now = new Date().toISOString()
+  return campNames.map((campName) => ({ campName, version: 1, capacityUpdatedAt: now }))
+}
+
+/** 旧入住（没有容量批次）：列待确认，不挤占剩余名额。日期相对今天，保证首屏可见。 */
+function seedLegacyBatches(campNames: string[]): OccupancyBatch[] {
+  const now = new Date().toISOString()
+  const [yunqi, beiling, shanmu] = campNames
+  const today = todayIso()
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10)
+  const rows: Array<Partial<OccupancyBatch> & { batchNo: string; campName: string; checkInDate: string; tentCount: number }> = [
+    {
+      batchNo: 'LEGACY-0001',
+      campName: yunqi ?? '云栖山谷营地',
+      siteId: null,
+      teamName: '山野徒步队（纸质登记）',
+      contact: '李营',
+      checkInDate: today,
+      tentCount: 2,
+      legacy: true,
+      note: '开台账前的纸质入住记录，无容量批次，待补登确认'
+    },
+    {
+      batchNo: 'LEGACY-0002',
+      campName: beiling ?? '北岭高地营地',
+      siteId: null,
+      teamName: '骑行小队（口头登记）',
+      contact: '周勘',
+      checkInDate: tomorrow,
+      tentCount: 1,
+      legacy: true,
+      note: '开台账前的口头入住记录，无容量批次，待补登确认'
+    }
+  ]
+  return rows.map((r) => ({
+    siteId: null,
+    teamName: '',
+    contact: '',
+    status: 'legacy' as const,
+    campVersion: 1,
+    windowId: '',
+    holdExpiresAt: null,
+    lastHeartbeatAt: null,
+    confirmedAt: null,
+    invalidatedAt: null,
+    invalidateReason: '',
+    legacy: true,
+    note: '',
+    createdAt: now,
+    updatedAt: now,
+    ...r
+  })) as OccupancyBatch[]
+}
+
+/** 台账样例：今日一条已确认批次（占用容量），其余为待确认的旧入住。 */
+function seedBatches(campNames: string[]): OccupancyBatch[] {
+  const now = new Date().toISOString()
+  const today = todayIso()
+  const confirmed: OccupancyBatch = {
+    batchNo: 'PC-0001',
+    campName: campNames[0] ?? '云栖山谷营地',
+    siteId: null,
+    teamName: '亲子露营团',
+    contact: '王领队',
+    checkInDate: today,
+    tentCount: 3,
+    status: 'confirmed',
+    campVersion: 1,
+    windowId: '',
+    holdExpiresAt: null,
+    lastHeartbeatAt: null,
+    confirmedAt: now,
+    invalidatedAt: null,
+    invalidateReason: '',
+    legacy: false,
+    note: '台账启用后首批确认入住',
+    createdAt: now,
+    updatedAt: now
+  }
+  return [confirmed, ...seedLegacyBatches(campNames)]
 }

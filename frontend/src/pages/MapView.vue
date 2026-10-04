@@ -12,17 +12,20 @@ import EmptyState from '@/components/common/EmptyState.vue'
 import { useSiteStore } from '@/stores/siteStore'
 import { useProfileStore } from '@/stores/profileStore'
 import { useUiStore } from '@/stores/uiStore'
+import { useLedgerStore } from '@/stores/ledgerStore'
 import { useRanking } from '@/hooks/useRanking'
 import type { Grade } from '@/utils/score'
 import { useAmapLoader } from '@/hooks/useAmapLoader'
 import { SURFACE_TYPES } from '@/types/campsite'
 import { formatLat, formatLng, distanceMeters, formatDistance } from '@/utils/geo'
-import { formatDate } from '@/utils/format'
+import { summarizeCapacity } from '@/utils/ledger'
+import { formatDate, todayIso } from '@/utils/format'
 
 const router = useRouter()
 const siteStore = useSiteStore()
 const profileStore = useProfileStore()
 const uiStore = useUiStore()
+const ledgerStore = useLedgerStore()
 
 /** 与 MapPanel 内保持一致的降级判定，用于页面顶部的模式说明 */
 const { hasKey, degraded: loaderDegraded, reason } = useAmapLoader(false)
@@ -66,6 +69,19 @@ const selectedRow = computed(() =>
 )
 
 const selectedVetos = computed(() => uiStore.vetosOf(selectedId.value))
+
+/** 选中营位所属营地今日入住占用（仅已确认批次计入，预占 / 排队 / 待重算 / 旧入住不占名额）。 */
+const selectedOccupancy = computed(() => {
+  if (!selectedSite.value) return null
+  return summarizeCapacity(
+    ledgerStore.batches,
+    siteStore.list,
+    selectedSite.value.campName,
+    todayIso(),
+    uiStore.vetoedSiteIds,
+    Date.now()
+  )
+})
 
 /** 选中营位到最近营位的距离，作为现场通行参考 */
 const nearest = computed(() => {
@@ -235,6 +251,22 @@ const gradeStats = computed(() => {
         <div class="detail-item">
           <span class="detail-item__label">容量 / 进出</span>
           <span>{{ selectedSite.tentCapacity }} 帐 / {{ selectedSite.access }}</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-item__label">今日入住（确认）</span>
+          <span v-if="selectedOccupancy">
+            <strong>{{ selectedOccupancy.confirmed }}</strong> / {{ selectedOccupancy.bookable }} 帐
+            <el-tag
+              v-if="selectedOccupancy.stale + selectedOccupancy.legacy > 0"
+              type="danger"
+              size="small"
+              effect="plain"
+              style="margin-left: 6px"
+            >
+              待确认 {{ selectedOccupancy.stale + selectedOccupancy.legacy }}
+            </el-tag>
+          </span>
+          <span v-else>—</span>
         </div>
         <div class="detail-item">
           <span class="detail-item__label">平整度</span>

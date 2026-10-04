@@ -4,23 +4,40 @@
  * 可按营地 / 地表类型 / 进出方式筛选，命中否决项的营位整行标红。
  * 消费 Campsite、FactorAssessment、RiskVeto；复用 <GradeBadge>、<EmptyState>。
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSiteStore } from '@/stores/siteStore'
 import { useProfileStore } from '@/stores/profileStore'
 import { useUiStore } from '@/stores/uiStore'
+import { useLedgerStore } from '@/stores/ledgerStore'
 import { useRanking } from '@/hooks/useRanking'
 import { FACTOR_META } from '@/types/score'
 import { SURFACE_TYPES, ACCESS_MODES } from '@/types/campsite'
 import GradeBadge from '@/components/common/GradeBadge.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
-import { formatScore } from '@/utils/format'
+import { formatScore, todayIso } from '@/utils/format'
+import { summarizeCapacity } from '@/utils/ledger'
 import { NORMALIZE_LABELS } from '@/types/score'
 
 const router = useRouter()
 const siteStore = useSiteStore()
 const profileStore = useProfileStore()
 const uiStore = useUiStore()
+const ledgerStore = useLedgerStore()
+
+/** 入住日：容量台账按营地 + 入住日占用，仅「已确认」批次计入名次表。 */
+const occupancyDate = ref(todayIso())
+
+function campView(campName: string) {
+  return summarizeCapacity(
+    ledgerStore.batches,
+    siteStore.list,
+    campName,
+    occupancyDate.value,
+    uiStore.vetoedSiteIds,
+    Date.now()
+  )
+}
 
 const inputSites = computed(() =>
   siteStore.list.filter((site) => {
@@ -157,8 +174,19 @@ function openDetail(siteId: number | undefined): void {
           clearable
           style="width: 230px"
         />
+        <el-date-picker
+          v-model="occupancyDate"
+          type="date"
+          value-format="YYYY-MM-DD"
+          style="width: 170px"
+          placeholder="入住日"
+        />
         <el-button text @click="uiStore.resetFilters()">清空筛选</el-button>
       </div>
+      <p class="weight-note occupancy-note">
+        入住占用按「营地 + 入住日」统计，仅已确认批次计入；预占 / 排队 / 待重算 / 旧入住均不占名额。
+        前往 <el-link type="primary" underline="never" @click="router.push('/ledger')">容量台账</el-link> 办理入住。
+      </p>
     </section>
 
     <section class="panel">
@@ -246,6 +274,22 @@ function openDetail(siteId: number | undefined): void {
             <span v-else class="muted">无</span>
           </template>
         </el-table-column>
+        <el-table-column label="入住（确认）" width="130">
+          <template #default="{ row }">
+            <span class="occ-cell">
+              <strong>{{ campView(row.site.campName).confirmed }}</strong>
+              <span class="muted"> / {{ campView(row.site.campName).bookable }} 帐</span>
+            </span>
+            <el-tag
+              v-if="campView(row.site.campName).stale + campView(row.site.campName).legacy > 0"
+              type="danger"
+              size="small"
+              effect="plain"
+            >
+              待确认 {{ campView(row.site.campName).stale + campView(row.site.campName).legacy }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="132" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text type="primary" @click="openDetail(row.site.id)">详情</el-button>
@@ -306,5 +350,18 @@ function openDetail(siteId: number | undefined): void {
 }
 .mr6 {
   margin-right: 6px;
+}
+.occupancy-note {
+  margin: 8px 0 0;
+}
+.occ-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.muted {
+  color: var(--gb-muted);
+  font-size: 12px;
 }
 </style>

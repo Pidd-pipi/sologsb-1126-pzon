@@ -9,6 +9,8 @@ import type { RiskVeto } from '@/types/veto'
 import type { FactorWeights, NormalizeMethod, GradeThresholds } from '@/types/score'
 import { DEFAULT_WEIGHTS } from '@/types/score'
 import type { AccessMode, SurfaceType } from '@/types/campsite'
+import { useSiteStore } from '@/stores/siteStore'
+import { useLedgerStore } from '@/stores/ledgerStore'
 import { nowIso, todayIso } from '@/utils/format'
 
 export const useUiStore = defineStore('ui', () => {
@@ -51,12 +53,31 @@ export const useUiStore = defineStore('ui', () => {
     delete record.id
     const id = await db.vetos.add(record)
     await loadVetos()
+    // 风险否决变化 → 相关入住批次立即失效重算
+    await invalidateSiteCamp(input.siteId, '风险否决登记')
     return id
   }
 
   async function removeVeto(id: number): Promise<void> {
+    const veto = vetos.value.find((v) => v.id === id)
     await db.vetos.delete(id)
     await loadVetos()
+    // 风险否决变化 → 相关入住批次立即失效重算
+    if (veto) await invalidateSiteCamp(veto.siteId, '风险否决解除')
+  }
+
+  /** 否决变化后让该营位所属营地的入住批次失效重算（失败不阻断主流程）。 */
+  async function invalidateSiteCamp(siteId: number | null | undefined, reason: string): Promise<void> {
+    if (siteId == null) return
+    try {
+      const siteStore = useSiteStore()
+      const site = siteStore.list.find((s) => s.id === siteId)
+      if (!site) return
+      const ledger = useLedgerStore()
+      await ledger.bumpCampVersion(site.campName, reason)
+    } catch (err) {
+      console.warn('[gbcampsite] 容量台账失效失败：', err)
+    }
   }
 
   /** 某营位命中的全部否决项 */
